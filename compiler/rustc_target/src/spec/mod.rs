@@ -45,7 +45,7 @@ use std::{fmt, io};
 use rustc_fs_util::try_canonicalize;
 use rustc_macros::{Decodable, Encodable, HashStable_Generic};
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
-use rustc_span::symbol::{Symbol, kw, sym};
+use rustc_span::symbol::{kw, sym, Symbol};
 use serde_json::Value;
 use tracing::debug;
 
@@ -1119,6 +1119,36 @@ impl ToJson for TlsModel {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum TlsDialect {
+    Trad, // Use traditional TLS (e.g. through tls_get_addr()).
+    Desc, // Use TLS descriptors (TLSDESC).
+}
+
+impl FromStr for TlsDialect {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<TlsDialect, ()> {
+        Ok(match s {
+            // There are only two variants, but the options spelling has been inconsistent across
+            // architectures in other compilers.
+            "trad" | "traditional" | "gnu" => TlsDialect::Trad,
+            "desc" | "descriptor" | "gnu2" => TlsDialect::Desc,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl ToJson for TlsDialect {
+    fn to_json(&self) -> Json {
+        match *self {
+            TlsDialect::Trad => "trad",
+            TlsDialect::Desc => "desc",
+        }
+        .to_json()
+    }
+}
+
 /// Everything is flattened to a single enum to make the json encoding/decoding less annoying.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum LinkOutputKind {
@@ -1331,9 +1361,9 @@ impl StackProbeType {
                     .and_then(|o| o.as_array())
                     .ok_or_else(|| "expected `min-llvm-version-for-inline` to be an array")?;
                 let mut iter = min_version.into_iter().map(|v| {
-                    let int = v.as_u64().ok_or_else(
-                        || "expected `min-llvm-version-for-inline` values to be integers",
-                    )?;
+                    let int = v.as_u64().ok_or_else(|| {
+                        "expected `min-llvm-version-for-inline` values to be integers"
+                    })?;
                     u32::try_from(int)
                         .map_err(|_| "`min-llvm-version-for-inline` values don't convert to u32")
                 });
@@ -2207,6 +2237,9 @@ pub struct TargetOptions {
     /// TLS model to use. Options are "global-dynamic" (default), "local-dynamic", "initial-exec"
     /// and "local-exec". This is similar to the -ftls-model option in GCC/Clang.
     pub tls_model: TlsModel,
+    /// TLS dialect to use. Options are "trad" (default) for traditional TLS access and "desc"
+    /// for TLSDESC. This is similar to the -mtls-dialect option in GCC/Clang.
+    pub tls_dialect: TlsDialect,
     /// Do not emit code that uses the "red zone", if the ABI has one. Defaults to false.
     pub disable_redzone: bool,
     /// Frame pointer mode for this target. Defaults to `MayOmit`.
@@ -2603,6 +2636,7 @@ impl Default for TargetOptions {
             relocation_model: RelocModel::Pic,
             code_model: None,
             tls_model: TlsModel::GeneralDynamic,
+            tls_dialect: TlsDialect::Trad,
             disable_redzone: false,
             frame_pointer: FramePointer::MayOmit,
             function_sections: true,
@@ -3444,10 +3478,10 @@ impl Target {
 
         // Each field should have been read using `Json::remove` so any keys remaining are unused.
         let remaining_keys = obj.keys();
-        Ok((base, TargetWarnings {
-            unused_fields: remaining_keys.cloned().collect(),
-            incorrect_type,
-        }))
+        Ok((
+            base,
+            TargetWarnings { unused_fields: remaining_keys.cloned().collect(), incorrect_type },
+        ))
     }
 
     /// Load a built-in target

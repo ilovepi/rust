@@ -825,6 +825,7 @@ pub enum PrintKind {
     RelocationModels,
     CodeModels,
     TlsModels,
+    TlsDialect,
     TargetSpec,
     AllTargetSpecs,
     NativeStaticLibs,
@@ -1951,6 +1952,7 @@ fn collect_print_requests(
         ("target-libdir", PrintKind::TargetLibdir),
         ("target-list", PrintKind::TargetList),
         ("target-spec-json", PrintKind::TargetSpec),
+        ("tls-dialect", PrintKind::TlsDialect),
         ("tls-models", PrintKind::TlsModels),
         // tidy-alphabetical-end
     ];
@@ -3013,7 +3015,7 @@ pub(crate) mod dep_tracking {
     use rustc_target::spec::{
         CodeModel, FramePointer, MergeFunctions, OnBrokenPipe, PanicStrategy, RelocModel,
         RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, SymbolVisibility, TargetTriple,
-        TlsModel, WasmCAbi,
+        TlsDialect, TlsModel, WasmCAbi,
     };
 
     use super::{
@@ -3078,6 +3080,7 @@ pub(crate) mod dep_tracking {
         FramePointer,
         RelocModel,
         CodeModel,
+        TlsDialect,
         TlsModel,
         InstrumentCoverage,
         CoverageOptions,

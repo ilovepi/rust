@@ -2,9 +2,9 @@ use std::any::Any;
 use std::ops::{Div, Mul};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
+use std::sync::Arc;
 use std::{env, fmt, io};
 
 use rustc_data_structures::flock;
@@ -16,12 +16,12 @@ use rustc_data_structures::sync::{
 };
 use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitter;
 use rustc_errors::codes::*;
-use rustc_errors::emitter::{DynEmitter, HumanEmitter, HumanReadableErrorType, stderr_destination};
+use rustc_errors::emitter::{stderr_destination, DynEmitter, HumanEmitter, HumanReadableErrorType};
 use rustc_errors::json::JsonEmitter;
 use rustc_errors::registry::Registry;
 use rustc_errors::{
-    Diag, DiagCtxt, DiagCtxtHandle, DiagMessage, Diagnostic, ErrorGuaranteed, FatalAbort,
-    FluentBundle, LazyFallbackBundle, TerminalUrl, fallback_fluent_bundle,
+    fallback_fluent_bundle, Diag, DiagCtxt, DiagCtxtHandle, DiagMessage, Diagnostic,
+    ErrorGuaranteed, FatalAbort, FluentBundle, LazyFallbackBundle, TerminalUrl,
 };
 use rustc_macros::HashStable_Generic;
 pub use rustc_span::def_id::StableCrateId;
@@ -32,7 +32,7 @@ use rustc_target::asm::InlineAsmArch;
 use rustc_target::spec::{
     CodeModel, DebuginfoKind, PanicStrategy, RelocModel, RelroLevel, SanitizerSet,
     SmallDataThresholdSupport, SplitDebuginfo, StackProtector, SymbolVisibility, Target,
-    TargetTriple, TlsModel,
+    TargetTriple, TlsDialect, TlsModel,
 };
 
 use crate::code_stats::CodeStats;
@@ -42,7 +42,7 @@ use crate::config::{
     InstrumentCoverage, OptLevel, OutFileName, OutputType, RemapPathScopeComponents,
     SwitchWithOptPath,
 };
-use crate::parse::{ParseSess, add_feature_diagnostics};
+use crate::parse::{add_feature_diagnostics, ParseSess};
 use crate::search_paths::{PathKind, SearchPath};
 use crate::{errors, filesearch, lint};
 
@@ -648,10 +648,13 @@ impl Session {
     }
 
     pub fn mir_opt_level(&self) -> usize {
-        self.opts
-            .unstable_opts
-            .mir_opt_level
-            .unwrap_or_else(|| if self.opts.optimize != OptLevel::No { 2 } else { 1 })
+        self.opts.unstable_opts.mir_opt_level.unwrap_or_else(|| {
+            if self.opts.optimize != OptLevel::No {
+                2
+            } else {
+                1
+            }
+        })
     }
 
     /// Calculates the flavor of LTO to use for this compilation.
@@ -763,6 +766,10 @@ impl Session {
 
     pub fn tls_model(&self) -> TlsModel {
         self.opts.unstable_opts.tls_model.unwrap_or(self.target.tls_model)
+    }
+
+    pub fn tls_dialect(&self) -> TlsDialect {
+        self.opts.unstable_opts.tls_dialect.unwrap_or(self.target.tls_dialect)
     }
 
     pub fn direct_access_external_data(&self) -> Option<bool> {

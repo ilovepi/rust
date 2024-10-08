@@ -2175,6 +2175,7 @@ unsafe extern "C" {
         OutputObjFile: *const c_char,
         DebugInfoCompression: *const c_char,
         UseEmulatedTls: bool,
+        EnableTlsDesc: bool,
         ArgsCstrBuff: *const c_char,
         ArgsCstrBuffLen: usize,
     ) -> *mut TargetMachine;

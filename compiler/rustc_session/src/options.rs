@@ -14,13 +14,13 @@ use rustc_span::{RealFileName, SourceFileHashAlgorithm};
 use rustc_target::spec::{
     CodeModel, FramePointer, LinkerFlavorCli, MergeFunctions, OnBrokenPipe, PanicStrategy,
     RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, SymbolVisibility,
-    TargetTriple, TlsModel, WasmCAbi,
+    TargetTriple, TlsDialect, TlsModel, WasmCAbi,
 };
 
 use crate::config::*;
 use crate::search_paths::SearchPath;
 use crate::utils::NativeLib;
-use crate::{EarlyDiagCtxt, lint};
+use crate::{lint, EarlyDiagCtxt};
 
 macro_rules! insert {
     ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr) => {
@@ -35,7 +35,9 @@ macro_rules! insert {
 
 macro_rules! hash_opt {
     ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $_for_crate_hash: ident, [UNTRACKED]) => {{}};
-    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $_for_crate_hash: ident, [TRACKED]) => {{ insert!($opt_name, $opt_expr, $sub_hashes) }};
+    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $_for_crate_hash: ident, [TRACKED]) => {{
+        insert!($opt_name, $opt_expr, $sub_hashes)
+    }};
     ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $for_crate_hash: ident, [TRACKED_NO_CRATE_HASH]) => {{
         if !$for_crate_hash {
             insert!($opt_name, $opt_expr, $sub_hashes)
@@ -427,6 +429,8 @@ mod desc {
         "one of supported code models (`rustc --print code-models`)";
     pub(crate) const parse_tls_model: &str =
         "one of supported TLS models (`rustc --print tls-models`)";
+    pub(crate) const parse_tls_dialect: &str =
+        "one of supported TLS dialects (`rustc --print tls-dialect`)";
     pub(crate) const parse_target_feature: &str = parse_string;
     pub(crate) const parse_terminal_url: &str =
         "either a boolean (`yes`, `no`, `on`, `off`, etc), or `auto`";
@@ -1251,6 +1255,13 @@ mod parse {
     pub(crate) fn parse_tls_model(slot: &mut Option<TlsModel>, v: Option<&str>) -> bool {
         match v.and_then(|s| TlsModel::from_str(s).ok()) {
             Some(tls_model) => *slot = Some(tls_model),
+            _ => return false,
+        }
+        true
+    }
+    pub(crate) fn parse_tls_dialect(slot: &mut Option<TlsDialect>, v: Option<&str>) -> bool {
+        match v.and_then(|s| TlsDialect::from_str(s).ok()) {
+            Some(tls_dialect) => *slot = Some(tls_dialect),
             _ => return false,
         }
         true
@@ -2120,6 +2131,9 @@ written to standard error output)"),
     #[rustc_lint_opt_deny_field_access("use `Session::tls_model` instead of this field")]
     tls_model: Option<TlsModel> = (None, parse_tls_model, [TRACKED],
         "choose the TLS model to use (`rustc --print tls-models` for details)"),
+    #[rustc_lint_opt_deny_field_access("use `Session::tls_model` instead of this field")]
+    tls_dialect: Option<TlsDialect> = (None, parse_tls_dialect, [TRACKED],
+        "choose the TLS dialect to use (`rustc --print tls-dialect` for details)"),
     trace_macros: bool = (false, parse_bool, [UNTRACKED],
         "for every macro invocation, print its name and arguments (default: no)"),
     track_diagnostics: bool = (false, parse_bool, [UNTRACKED],
