@@ -1515,6 +1515,250 @@ pub fn install_ice_hook(bug_report_url: &'static str, extra_info: fn(&DiagCtxt))
     ));
 }
 
+fn should_generate_reproducer(sess: &Session) -> bool {
+    match sess.opts.unstable_opts.crash_diagnostics {
+        Some(enabled) => enabled,
+        None => sess.is_nightly_build() && !sess.opts.unstable_opts.ui_testing,
+    }
+}
+
+/// Resolves a path to its location inside the reproducer bundle.
+///
+/// We mirror all compiler inputs into a copy of the host's filesystem inside
+/// the reproducer directory.
+///
+/// # Example:
+///
+/// If the original file is `/foo/bar.rs` and the reproducer directory is `/bundle`,
+/// the file is copied to `/bundle/foo/bar.rs`. When the reproducer is run,
+/// the command line argument `/foo/bar.rs` is changed to
+/// `foo/bar.rs` to point to the copied file.
+fn map_to_bundle_path(local_path: &Path, cwd: &Path) -> PathBuf {
+    let abs_path =
+        if local_path.is_absolute() { local_path.to_path_buf() } else { cwd.join(local_path) };
+    let root = abs_path.ancestors().last().unwrap_or(&abs_path);
+    abs_path.strip_prefix(root).unwrap_or(&abs_path).to_path_buf()
+}
+
+/// Copies all local and upstream source files accessed during compilation into the bundle.
+fn copy_reproducer_sources(
+    sess: &Session,
+    bundle_dir: &Path,
+    cwd: &Path,
+) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut copied = Vec::new();
+
+    for file in sess.source_map().files().iter() {
+        if file.cnum != LOCAL_CRATE {
+            continue;
+        }
+        let FileName::Real(real_file) = &file.name else { continue };
+        let Some(local_path) = real_file.local_path() else { continue };
+        if !local_path.exists() {
+            continue;
+        }
+
+        let rel_path = map_to_bundle_path(local_path, cwd);
+        let dest_path = bundle_dir.join(&rel_path);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(local_path, &dest_path)?;
+        copied.push((local_path.to_path_buf(), rel_path));
+    }
+    Ok(copied)
+}
+
+fn copy_extern_dependencies(
+    sess: &Session,
+    bundle_dir: &Path,
+    cwd: &Path,
+) -> io::Result<Vec<(String, PathBuf)>> {
+    let mut rewritten = Vec::new();
+
+    for (name, entry) in sess.opts.externs.iter() {
+        let Some(files) = entry.files() else { continue };
+        for path in files {
+            let original_path = path.canonicalized();
+            if !original_path.exists() {
+                continue;
+            }
+
+            let rel_dep_path = map_to_bundle_path(&original_path, cwd);
+            let dest_path = bundle_dir.join(&rel_dep_path);
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&original_path, &dest_path)?;
+            rewritten.push((name.clone(), rel_dep_path));
+        }
+    }
+    Ok(rewritten)
+}
+
+fn copy_target_spec(sess: &Session, bundle_dir: &Path) -> io::Result<Option<String>> {
+    if let rustc_target::spec::TargetTuple::TargetJson { contents, .. } = &sess.opts.target_triple {
+        let target_json_path = bundle_dir.join("target.json");
+        fs::write(&target_json_path, contents)?;
+        Ok(Some("target.json".to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn write_reproduce_script(
+    sess: &Session,
+    bundle_dir: &Path,
+    copied_files: &[(PathBuf, PathBuf)],
+    rewritten_externs: &[(String, PathBuf)],
+    rewritten_target: &Option<String>,
+    cwd: &Path,
+) -> io::Result<()> {
+    let reproduce_sh_path = bundle_dir.join("reproduce.sh");
+    let mut sh = fs::File::create(&reproduce_sh_path)?;
+    writeln!(sh, "#!/usr/bin/env bash")?;
+    writeln!(sh, "# Automated compiler reproducer execution script")?;
+    writeln!(sh, "export RUST_BACKTRACE=full")?;
+    writeln!(sh, "")?;
+
+    let mut cmd = Vec::new();
+    let rustc_path = std::env::current_exe()?;
+    cmd.push(rustc_path.to_string_lossy().to_string());
+
+    let input_rel_path = match &sess.io.input {
+        config::Input::File(path) => copied_files
+            .iter()
+            .find(|(orig, _)| orig == path)
+            .map(|(_, rel)| rel.clone())
+            .unwrap_or_else(|| map_to_bundle_path(path, cwd)),
+        config::Input::Str { .. } => map_to_bundle_path(Path::new("main.rs"), cwd),
+    };
+    cmd.push(input_rel_path.to_string_lossy().to_string());
+
+    cmd.push(format!("--edition={}", sess.opts.edition));
+
+    for (name, rel_path) in rewritten_externs {
+        cmd.push(format!("--extern"));
+        cmd.push(format!("{}={}", name, rel_path.to_string_lossy()));
+    }
+
+    if let Some(target_spec) = rewritten_target {
+        cmd.push(format!("--target"));
+        cmd.push(target_spec.clone());
+    }
+
+    let mut args = std::env::args().collect::<Vec<_>>();
+    if !args.is_empty() {
+        args.remove(0);
+    }
+
+    let mut filtered_args = Vec::new();
+    let mut args_iter = args.into_iter().peekable();
+    while let Some(arg) = args_iter.next() {
+        if arg == "-Z" {
+            if let Some(next_arg) = args_iter.peek() {
+                if next_arg.starts_with("crash-diagnostics-dir=")
+                    || next_arg.starts_with("crash-diagnostics=")
+                {
+                    args_iter.next();
+                    continue;
+                }
+            }
+        }
+        if arg.starts_with("-Zcrash-diagnostics-dir=") || arg.starts_with("-Zcrash-diagnostics=") {
+            continue;
+        }
+
+        if arg == "--extern" || arg.starts_with("--extern=") {
+            if arg == "--extern" {
+                args_iter.next();
+            }
+            continue;
+        }
+        if arg == "--target" || arg.starts_with("--target=") {
+            if arg == "--target" {
+                args_iter.next();
+            }
+            continue;
+        }
+        if let config::Input::File(path) = &sess.io.input {
+            if arg == path.to_string_lossy() {
+                continue;
+            }
+        }
+        filtered_args.push(arg);
+    }
+
+    for arg in filtered_args {
+        let quoted = shlex::try_quote(&arg)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+            .into_owned();
+        cmd.push(quoted);
+    }
+
+    cmd.push("-Zcrash-diagnostics=off".to_string());
+
+    writeln!(sh, "{}", cmd.join(" \\\n  "))?;
+
+    Ok(())
+}
+
+fn write_metadata(bundle_dir: &Path, timestamp: &str, pid: u32) -> io::Result<()> {
+    let metadata_path = bundle_dir.join("metadata.json");
+    let meta = fs::File::create(&metadata_path)?;
+    let version = util::version_str!().unwrap_or("unknown_version");
+    let tuple = config::host_tuple();
+    let metadata = serde_json::json!({
+        "rustc_version": version,
+        "platform": tuple,
+        "timestamp": timestamp,
+        "pid": pid,
+        "env": {
+            "RUSTFLAGS": std::env::var("RUSTFLAGS").unwrap_or_default(),
+            "RUSTC_LOG": std::env::var("RUSTC_LOG").unwrap_or_default(),
+        }
+    });
+    serde_json::to_writer_pretty(meta, &metadata)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+}
+
+/// Packages compiler inputs, precompiled external dependencies, and target specifications
+/// into a self-contained directory, and compresses it into a `.tar.gz` bundle.
+fn generate_reproducer(sess: &Session) -> io::Result<PathBuf> {
+    let base_dir =
+        sess.opts.unstable_opts.crash_diagnostics_dir.clone().unwrap_or_else(std::env::temp_dir);
+
+    let timestamp = jiff::Zoned::now().strftime("%Y-%m-%dT%H_%M_%S").to_string();
+    let crate_name = sess.opts.crate_name.as_deref().unwrap_or_else(|| sess.io.input.filestem());
+    let pid = std::process::id();
+    let bundle_dir_name = if sess.opts.unstable_opts.ui_testing {
+        crate_name.to_string()
+    } else {
+        format!("{crate_name}-{pid}")
+    };
+    let bundle_dir = base_dir.join(&bundle_dir_name);
+
+    fs::create_dir_all(&bundle_dir)?;
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+
+    let copied_files = copy_reproducer_sources(sess, &bundle_dir, &cwd)?;
+    let rewritten_externs = copy_extern_dependencies(sess, &bundle_dir, &cwd)?;
+    let rewritten_target = copy_target_spec(sess, &bundle_dir)?;
+
+    write_reproduce_script(
+        sess,
+        &bundle_dir,
+        &copied_files,
+        &rewritten_externs,
+        &rewritten_target,
+        &cwd,
+    )?;
+    write_metadata(&bundle_dir, &timestamp, pid)?;
+
+    Ok(bundle_dir)
+}
+
 /// Prints the ICE message, including query stack, but without backtrace.
 ///
 /// The message will point the user at `bug_report_url` to report the ICE.
@@ -1599,6 +1843,26 @@ fn report_ice(
     let limit_frames = if backtrace { None } else { Some(2) };
 
     interface::try_print_query_stack(dcx, limit_frames, file);
+
+    rustc_middle::ty::tls::with_opt(|tcx| {
+        let Some(tcx) = tcx else { return };
+        let sess = tcx.sess;
+        if !should_generate_reproducer(sess) {
+            return;
+        }
+        match generate_reproducer(sess) {
+            Ok(path) => {
+                dcx.struct_note(format!(
+                    "compiler reproducer bundle successfully generated at `{}`",
+                    path.display()
+                ))
+                .emit();
+            }
+            Err(err) => {
+                dcx.struct_warn(format!("failed to generate compiler reproducer: {err}")).emit();
+            }
+        }
+    });
 
     // We don't trust this callback not to panic itself, so run it at the end after we're sure we've
     // printed all the relevant info.
