@@ -1536,8 +1536,9 @@ fn should_generate_reproducer(sess: &Session) -> bool {
 fn map_to_bundle_path(local_path: &Path, cwd: &Path) -> PathBuf {
     let abs_path =
         if local_path.is_absolute() { local_path.to_path_buf() } else { cwd.join(local_path) };
-    let root = abs_path.ancestors().last().unwrap_or(&abs_path);
-    abs_path.strip_prefix(root).unwrap_or(&abs_path).to_path_buf()
+    let canonical_path = abs_path.canonicalize().unwrap_or(abs_path);
+    let root = canonical_path.ancestors().last().unwrap_or(&canonical_path);
+    canonical_path.strip_prefix(root).unwrap_or(&canonical_path).to_path_buf()
 }
 
 /// Copies all local and upstream source files accessed during compilation into the bundle.
@@ -1558,13 +1559,14 @@ fn copy_reproducer_sources(
             continue;
         }
 
-        let rel_path = map_to_bundle_path(local_path, cwd);
+        let canonical_path = local_path.canonicalize().unwrap_or_else(|_| local_path.to_path_buf());
+        let rel_path = map_to_bundle_path(&canonical_path, cwd);
         let dest_path = bundle_dir.join(&rel_path);
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(local_path, &dest_path)?;
-        copied.push((local_path.to_path_buf(), rel_path));
+        fs::copy(&canonical_path, &dest_path)?;
+        copied.push((canonical_path, rel_path));
     }
     Ok(copied)
 }
@@ -1626,11 +1628,14 @@ fn write_reproduce_script(
     cmd.push(rustc_path.to_string_lossy().to_string());
 
     let input_rel_path = match &sess.io.input {
-        config::Input::File(path) => copied_files
-            .iter()
-            .find(|(orig, _)| orig == path)
-            .map(|(_, rel)| rel.clone())
-            .unwrap_or_else(|| map_to_bundle_path(path, cwd)),
+        config::Input::File(path) => {
+            let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+            copied_files
+                .iter()
+                .find(|(orig, _)| orig == &canonical_path)
+                .map(|(_, rel)| rel.clone())
+                .unwrap_or_else(|| map_to_bundle_path(&canonical_path, cwd))
+        }
         config::Input::Str { .. } => map_to_bundle_path(Path::new("main.rs"), cwd),
     };
     cmd.push(input_rel_path.to_string_lossy().to_string());
@@ -1682,7 +1687,11 @@ fn write_reproduce_script(
             continue;
         }
         if let config::Input::File(path) = &sess.io.input {
-            if arg == path.to_string_lossy() {
+            let arg_path = Path::new(&arg);
+            let matches_input = arg_path.canonicalize()
+                .map(|c_arg| path.canonicalize().map(|c_path| c_arg == c_path).unwrap_or(false))
+                .unwrap_or(false);
+            if matches_input || arg == path.to_string_lossy() {
                 continue;
             }
         }
