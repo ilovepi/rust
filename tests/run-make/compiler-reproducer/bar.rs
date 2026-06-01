@@ -1,3 +1,7 @@
+#![feature(no_core)]
+#![no_std]
+#![no_core]
+
 pub fn hello() {
-    println!("hello from bar");
+    dep::greet();
 }

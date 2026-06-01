@@ -158,12 +158,23 @@ fn main() {
         );
     });
 
-    // Verify that external crate dependencies and multi-file submodules are resolved and bundled.
+    // Verify that crate dependencies are resolved and bundled.
     run_in_tmpdir(|| {
         let out_dir = cwd();
         let dir_arg = format!("-Zcrash-diagnostics-dir={}", out_dir.display());
 
-        rustc().input("bar.rs").crate_type("rlib").out_dir(&out_dir).run();
+        rustc().input("dep.rs").crate_type("rlib").out_dir(&out_dir).run();
+
+        let libdep_name = run_make_support::rust_lib_name("dep");
+        let libdep_path = out_dir.join(&libdep_name);
+        assert!(libdep_path.exists(), "libdep.rlib was not compiled");
+
+        rustc()
+            .input("bar.rs")
+            .crate_type("rlib")
+            .extern_("dep", &libdep_path)
+            .out_dir(&out_dir)
+            .run();
 
         let libbar_name = run_make_support::rust_lib_name("bar");
         let libbar_path = out_dir.join(&libbar_name);
@@ -181,15 +192,18 @@ fn main() {
         let expected_main = map_path("main.rs");
         let expected_foo = map_path("foo.rs");
         let expected_bar_dep = map_path(&libbar_name);
+        let expected_dep_dep = map_path(&libdep_name);
 
         verify_reproducer(
             &out_dir,
             &[("main.rs", &expected_main), ("foo.rs", &expected_foo)],
-            &[("bar", &expected_bar_dep)],
+            &[("bar", &expected_bar_dep), ("dep", &expected_dep_dep)],
             &[
                 &expected_main.to_string_lossy(),
                 "--extern",
                 &format!("bar={}", expected_bar_dep.to_string_lossy()),
+                "--extern",
+                &format!("dep={}", expected_dep_dep.to_string_lossy()),
                 "-Ztreat-err-as-bug=1",
             ],
         );

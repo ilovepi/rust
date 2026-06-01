@@ -1578,22 +1578,56 @@ fn copy_extern_dependencies(
 ) -> io::Result<Vec<(String, PathBuf)>> {
     let mut rewritten = Vec::new();
 
-    for (name, entry) in sess.opts.externs.iter() {
-        let Some(files) = entry.files() else { continue };
-        for path in files {
-            let original_path = path.canonicalized();
-            if !original_path.exists() {
-                continue;
-            }
+    // Gather dependencies, either from the crate store or the fallback command-line arguments.
+    let cstore_deps = rustc_middle::ty::tls::with_opt(|tcx| {
+        tcx.map(|tcx| {
+            let mut deps = Vec::new();
+            for &cnum in tcx.used_crates(()).iter() {
+                let crate_name = tcx.crate_name(cnum).to_string();
+                let crate_source = tcx.used_crate_source(cnum);
 
-            let rel_dep_path = map_to_bundle_path(&original_path, cwd);
-            let dest_path = bundle_dir.join(&rel_dep_path);
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
+                // Prioritize rlib, fall back to rmeta, then dylib.
+                let dep_path = crate_source
+                    .rlib
+                    .as_ref()
+                    .or(crate_source.rmeta.as_ref())
+                    .or(crate_source.dylib.as_ref());
+
+                if let Some(path) = dep_path {
+                    deps.push((crate_name, path.clone()));
+                }
             }
-            fs::copy(&original_path, &dest_path)?;
-            rewritten.push((name.clone(), rel_dep_path));
+            deps
+        })
+    });
+
+    let deps = if let Some(deps) = cstore_deps {
+        deps
+    } else {
+        let mut deps = Vec::new();
+        for (name, entry) in sess.opts.externs.iter() {
+            let Some(files) = entry.files() else { continue };
+            for path in files {
+                deps.push((name.clone(), path.canonicalized().to_path_buf()));
+            }
         }
+        deps
+    };
+
+    // Copy the gathered dependencies and map their paths inside the bundle.
+    for (name, path) in deps {
+        let original_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !original_path.exists() {
+            continue;
+        }
+
+        let rel_dep_path = map_to_bundle_path(&original_path, cwd);
+        let dest_path = bundle_dir.join(&rel_dep_path);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&original_path, &dest_path)?;
+        rewritten.push((name, rel_dep_path));
     }
     Ok(rewritten)
 }
@@ -1688,7 +1722,8 @@ fn write_reproduce_script(
         }
         if let config::Input::File(path) = &sess.io.input {
             let arg_path = Path::new(&arg);
-            let matches_input = arg_path.canonicalize()
+            let matches_input = arg_path
+                .canonicalize()
                 .map(|c_arg| path.canonicalize().map(|c_path| c_arg == c_path).unwrap_or(false))
                 .unwrap_or(false);
             if matches_input || arg == path.to_string_lossy() {
