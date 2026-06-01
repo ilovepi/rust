@@ -36,9 +36,11 @@ fn verify_reproducer(
 
     let metadata_path = bundle_dir.join("metadata.json");
     let reproduce_sh_path = bundle_dir.join("reproduce.sh");
+    let target_path = bundle_dir.join("target.json");
 
     assert!(metadata_path.exists(), "metadata.json missing");
     assert!(reproduce_sh_path.exists(), "reproduce.sh missing");
+    assert!(target_path.exists(), "target.json missing");
 
     for (orig_name, rel_path) in expected_srcs {
         let copied_src = bundle_dir.join(rel_path);
@@ -103,6 +105,14 @@ fn verify_reproducer(
     assert!(
         args.contains(&"-Zcrash-diagnostics=off".to_string()),
         "Missing -Zcrash-diagnostics=off in reproduce.sh"
+    );
+    assert!(
+        args.contains(&"-Zunstable-options".to_string()),
+        "Missing -Zunstable-options in reproduce.sh"
+    );
+    assert!(
+        args.contains(&"--target".to_string()) && args.contains(&"target.json".to_string()),
+        "Missing --target target.json in reproduce.sh"
     );
 }
 

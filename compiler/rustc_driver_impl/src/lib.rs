@@ -1633,13 +1633,14 @@ fn copy_extern_dependencies(
 }
 
 fn copy_target_spec(sess: &Session, bundle_dir: &Path) -> io::Result<Option<String>> {
-    if let rustc_target::spec::TargetTuple::TargetJson { contents, .. } = &sess.opts.target_triple {
-        let target_json_path = bundle_dir.join("target.json");
-        fs::write(&target_json_path, contents)?;
-        Ok(Some("target.json".to_string()))
-    } else {
-        Ok(None)
-    }
+    use rustc_target::json::ToJson;
+
+    let target_json = sess.target.to_json();
+    let target_json_str = serde_json::to_string_pretty(&target_json)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let target_json_path = bundle_dir.join("target.json");
+    fs::write(&target_json_path, target_json_str)?;
+    Ok(Some("target.json".to_string()))
 }
 
 fn write_reproduce_script(
@@ -1698,21 +1699,35 @@ fn write_reproduce_script(
             if let Some(next_arg) = args_iter.peek() {
                 if next_arg.starts_with("crash-diagnostics-dir=")
                     || next_arg.starts_with("crash-diagnostics=")
+                    || next_arg == &"unstable-options"
                 {
                     args_iter.next();
                     continue;
                 }
             }
         }
-        if arg.starts_with("-Zcrash-diagnostics-dir=") || arg.starts_with("-Zcrash-diagnostics=") {
+        if arg.starts_with("-Zcrash-diagnostics-dir=")
+            || arg.starts_with("-Zcrash-diagnostics=")
+            || arg == "-Zunstable-options"
+        {
             continue;
         }
 
         if arg == "--extern" || arg.starts_with("--extern=") {
-            if arg == "--extern" {
-                args_iter.next();
+            let extern_val = if arg == "--extern" {
+                args_iter.peek().map(|s| s.as_str())
+            } else {
+                arg.strip_prefix("--extern=").map(|s| s)
+            };
+            if let Some(val) = extern_val {
+                let name = val.split('=').next().unwrap_or("");
+                if rewritten_externs.iter().any(|(n, _)| n == name) {
+                    if arg == "--extern" {
+                        args_iter.next();
+                    }
+                    continue;
+                }
             }
-            continue;
         }
         if arg == "--target" || arg.starts_with("--target=") {
             if arg == "--target" {
@@ -1740,6 +1755,7 @@ fn write_reproduce_script(
         cmd.push(quoted);
     }
 
+    cmd.push("-Zunstable-options".to_string());
     cmd.push("-Zcrash-diagnostics=off".to_string());
 
     writeln!(sh, "{}", cmd.join(" \\\n  "))?;
