@@ -242,4 +242,31 @@ fn main() {
             "No reproducer files or directories should be created when disabled"
         );
     });
+
+    // Verify that compile-time asset files loaded via include_str!/include_bytes! are captured.
+    run_in_tmpdir(|| {
+        let out_dir = cwd();
+        let dir_arg = format!("-Zcrash-diagnostics-dir={}", out_dir.display());
+
+        rfs::write("asset.txt", "some asset content");
+        rfs::write("main.rs", "fn main() { let _x = include_str!(\"asset.txt\"); let y: () = \"force error\"; }");
+
+        let output = rustc()
+            .input("main.rs")
+            .arg("-Ztreat-err-as-bug=1")
+            .arg(&dir_arg)
+            .run_fail();
+
+        output.assert_stderr_contains("compiler reproducer bundle successfully generated");
+
+        let expected_main = map_path("main.rs");
+        let expected_asset = map_path("asset.txt");
+
+        verify_reproducer(
+            &out_dir,
+            &[("main.rs", &expected_main), ("asset.txt", &expected_asset)],
+            &[],
+            &[&expected_main.to_string_lossy(), "-Ztreat-err-as-bug=1"],
+        );
+    });
 }

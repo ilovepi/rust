@@ -1558,7 +1558,6 @@ fn copy_reproducer_sources(
         if !local_path.exists() {
             continue;
         }
-
         let canonical_path = local_path.canonicalize().unwrap_or_else(|_| local_path.to_path_buf());
         let rel_path = map_to_bundle_path(&canonical_path, cwd);
         let dest_path = bundle_dir.join(&rel_path);
@@ -1568,6 +1567,28 @@ fn copy_reproducer_sources(
         fs::copy(&canonical_path, &dest_path)?;
         copied.push((canonical_path, rel_path));
     }
+
+    for path_sym in sess.file_depinfo.lock().iter() {
+        let path_str = path_sym.as_str();
+        let local_path = Path::new(&path_str);
+        if !local_path.exists() {
+            continue;
+        }
+        let canonical_path = local_path.canonicalize().unwrap_or_else(|_| local_path.to_path_buf());
+
+        if copied.iter().any(|(orig, _)| orig == &canonical_path) {
+            continue;
+        }
+
+        let rel_path = map_to_bundle_path(&canonical_path, cwd);
+        let dest_path = bundle_dir.join(&rel_path);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&canonical_path, &dest_path)?;
+        copied.push((canonical_path, rel_path));
+    }
+
     Ok(copied)
 }
 
