@@ -22,6 +22,7 @@ use rustc_hir::attrs::SanitizerSet;
 use rustc_middle::bug;
 use rustc_middle::dep_graph::WorkProduct;
 use rustc_session::config;
+use rustc_target::spec::RelocModel;
 use tracing::{debug, info};
 
 use crate::back::write::{
@@ -720,6 +721,21 @@ pub(crate) fn optimize_and_codegen_thin_module(
     {
         let target = &*module.module_llvm.tm;
         let llmod = module.module_llvm.llmod();
+
+        let reloc_model = cgcx.relocation_model;
+        if matches!(reloc_model, RelocModel::Pic | RelocModel::Pie) {
+            unsafe {
+                llvm::LLVMRustSetModulePICLevel(llmod);
+            }
+            if reloc_model == RelocModel::Pie
+                || cgcx.crate_types.iter().all(|ty| *ty == config::CrateType::Executable)
+            {
+                unsafe {
+                    llvm::LLVMRustSetModulePIELevel(llmod);
+                }
+            }
+        }
+
         save_temp_bitcode(cgcx, &module, "thin-lto-input");
 
         // Up next comes the per-module local analyses that we do for Thin LTO.

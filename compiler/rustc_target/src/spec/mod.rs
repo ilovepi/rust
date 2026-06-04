@@ -938,6 +938,7 @@ crate::target_spec_enum! {
 }
 
 crate::target_spec_enum! {
+    #[derive(Encodable, Decodable)]
     pub enum RelocModel {
         Static = "static",
         Pic = "pic",

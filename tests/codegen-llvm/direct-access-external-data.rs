@@ -1,6 +1,6 @@
-//@ ignore-loongarch64 (handles dso_local differently)
-//@ ignore-powerpc64 (handles dso_local differently)
-//@ ignore-apple (handles dso_local differently)
+//@ ignore-loongarch64
+//@ ignore-powerpc64
+//@ ignore-apple
 
 //@ revisions: DEFAULT PIE DIRECT INDIRECT
 //@ [DEFAULT] compile-flags: -C relocation-model=static
